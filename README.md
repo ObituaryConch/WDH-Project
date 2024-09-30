@@ -1,2 +1,4 @@
 # WDH-Project
 Wyoming Department of Health Data Analysis Code
+
+Working in conjunction with my Wife at her company Loveland Solutions, she started developing code in R to generate values needed for a fact sheet that she was building for them. The code continued to have issues and break whenever she changed something. As her Data Scientist I went through the code and updated the pieces that were having issues as well as developed functions to decrease the number of lines from well over 3000 lines down to near 1500, just by developing reusable code. This code could still use updating and for the visualizations could have a function for coding them, however at this time that is not needed as the project just needed to be completed soon. The code that is provided is just the EDA portion of the code so as to ensure that we are not giving out any private information. 
