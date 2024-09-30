@@ -1,0 +1,1813 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Young Adult Survey
+
+## Statewide Analysis
+
+```{r}
+#install.packages("dplyr")
+#install.packages("ggplot2")
+#install.packages("survey")
+#install.packages("haven")
+#install.packages("car")
+#install.packages("magrittr")
+#library(car)
+library(haven)
+library(ggplot2)
+library(survey)
+library(dplyr)
+library(magrittr)
+
+
+Wyoming_YAS_2022 <- read.csv("~/Loveland Solutions/WDH-YoungAdult/Wyoming_YAS_2022.csv")
+   #View(Wyoming_YAS_2022)
+```
+
+There are 4,531 survey respondents and 143 variables.
+
+##Data Cleaning
+
+#####Non-response rates
+
+```{r}
+# Define mandatory variables
+mandatory_vars <- c("demo_9", "ha", "mh_1", "demo_8", "demo_3", 
+                    "demo", "demo_4", "a", "a_7", "m", 
+                    "m_7", "d_1", "mh", "mh_3", "mh_4", 
+                    "mh_2", "fire")
+
+# Calculate the number of respondents who did not answer all mandatory variables
+num_missing <- Wyoming_YAS_2022 %>%
+  filter(rowSums(is.na(select(., all_of(mandatory_vars)))) > 0) %>%
+  nrow()
+
+# Print the result
+print(num_missing)
+
+
+```
+
+If I were to exclude all of the people who did not answer all of the variables used in the fact sheets that would exclude 438 respondents.
+
+#### Figuring out how many questions most of these people answered.
+
+```{r}
+# Identify respondents who were excluded (did not answer all mandatory variables)
+excluded_respondents <- Wyoming_YAS_2022 %>%
+  filter(rowSums(is.na(select(., all_of(mandatory_vars)))) > 0)
+
+# Calculate the number of respondents who were excluded
+total_excluded <- nrow(excluded_respondents)
+
+# Calculate the percentage of answered mandatory variables for each excluded respondent
+answered_percentages <- rowSums(!is.na(excluded_respondents[mandatory_vars])) / length(mandatory_vars) * 100
+
+# Create a data frame to summarize the distribution of answered percentages
+percentage_distribution <- data.frame(percentage_range = character(), count = numeric(), stringsAsFactors = FALSE)
+
+# Loop through percentage increments of 10% and summarize the distribution
+for (j in seq(0, 100, by = 10)) {
+  range_count <- sum(answered_percentages >= j & answered_percentages < (j + 10))
+  percentage_distribution <- rbind(percentage_distribution, 
+                                   data.frame(percentage_range = paste(j, "-", j + 9, "%", sep = ""), count = range_count))
+}
+
+# View the distribution summary
+print(percentage_distribution)
+```
+
+####Exclude people who answered \<90% of mandatory variables.
+
+```{r}
+# Calculate the total number of mandatory variables
+total_mandatory <- length(mandatory_vars)
+
+# Calculate the minimum number of answered questions needed for 90%
+min_answered_for_90 <- ceiling(total_mandatory * 0.9)
+
+# Identify respondents who answered at least 90% of mandatory variables
+eligible_respondents <- Wyoming_YAS_2022 %>%
+  filter(rowSums(!is.na(select(., all_of(mandatory_vars)))) >= min_answered_for_90)
+
+# View the count of eligible respondents
+num_eligible <- nrow(eligible_respondents)
+print(paste("Number of respondents who answered at least 90% of mandatory questions:", num_eligible))
+
+```
+
+####Checking how many are missing Race among eligible respondents left
+
+```{r}
+# Define the tertiary variables
+race_vars <- c("demo_2___a", "demo_2___b", "demo_2___c", 
+                   "demo_2___d", "demo_2___e", "demo_2___f", 
+                   "demo_2___g", "demo_2___h")
+
+# Identify respondents in eligible_respondents who did not answer at least one of the tertiary variables
+not_answered_race <- Wyoming_YAS_2022 %>%
+  filter(rowSums(is.na(select(., all_of(race_vars)))) > 0)
+
+# Count the number of respondents who did not answer at least one tertiary variable
+num_not_answered_race <- nrow(not_answered_race)
+```
+
+Zero are missing race now! All eligible respondents answered at least one race column.
+
+####Checking the tobacco questions
+
+```{r}
+# Define the secondary variables
+tobacco_vars <- c("t___a", "t___b", "t___c", "t___d", "t___e", "t___f", "t___g")
+
+# Identify respondents in eligible_respondents who answered at least one of the secondary variables
+answered_secondary <- eligible_respondents %>%
+  filter(rowSums(!is.na(select(., all_of(tobacco_vars)))) > 0)
+
+# Count the number of respondents who answered at least one secondary variable
+num_answered_secondary <- nrow(answered_secondary)
+
+# Print the result
+print(paste("Number of eligible respondents who answered at least one of the tobacco variables:", num_answered_secondary))
+
+```
+
+
+
+##Weighted Survey Analysis
+
+```{r}
+#Creating new variables to include them in the survey analysis
+
+#Creating a variable for the number of tobacco products individuals smoked
+# Creating a variable for the number of tobacco products individuals smoked
+eligible_respondents$tobacco_all <- rowSums(eligible_respondents[, c("t___a", "t___b",  "t___c", "t___d",  "t___e", "t___f")], 
+                                            na.rm = TRUE)
+# Check the number of rows before mutation
+num_rows_before <- nrow(eligible_respondents)
+
+# Creating a yes/no tobacco variable
+YAS_clean <- eligible_respondents %>%
+  mutate(tobacco_yn = ifelse(tobacco_all != 0, 1, 0))
+
+# Check the number of rows after mutation
+num_rows_after <- nrow(YAS_clean)
+
+print(paste("Rows before:", num_rows_before))
+print(paste("Rows after:", num_rows_after))
+
+sum(is.na(eligible_respondents$tobacco_all))
+
+
+#Creating a yes/no binge drinking variable
+YAS_clean1 <- YAS_clean %>%
+  mutate(a_binge = ifelse(a_2 == 0, 0, 1))
+
+#Creating a yes/no health insurance variable
+YAS_clean2 <- YAS_clean1 %>%
+  mutate(ha_yn= ifelse(ha %in% c(11, 12, 13), 0, 1))
+
+#Creating a yes/no variable for d_2
+YAS_clean3 <- YAS_clean2 %>%
+  mutate(d2_yn= ifelse(d_2 == 0, 0, 1))
+
+#Creating a yes/no variable for d_3
+YAS_clean4 <- YAS_clean3 %>%
+  mutate(d3_yn= ifelse(d_3 == 0, 0, 1))
+
+#Creating a yes/no variable for m_4
+YAS_clean5 <- YAS_clean4 %>%
+  mutate(m_4yn= ifelse(m_4 == 0, 0, 1))
+
+#Creating a yes/no variable for mh_4 (Attempted Suicide)
+YAS_clean6 <- YAS_clean5 %>%
+  mutate(mh4yn= ifelse(mh_4 == 1, 0, 1))
+
+
+
+
+YAS_design <- svydesign(data=YAS_clean6, weights=~wt, id=~1)
+
+rm(YAS_clean1, YAS_clean2, YAS_clean3, YAS_clean4, YAS_clean5)
+
+# Check the distribution of new variables
+table(YAS_clean6$tobacco_yn)
+table(YAS_clean6$a_binge)
+table(YAS_clean6$ha_yn)
+```
+
+# Select County
+```{r}
+# Create a function to subset data by county and generate the survey design object
+create_svy_design_for_county <- function(data, county_id) {
+  # Subset the data for the given county
+  county_data <- subset(data, county == county_id)
+  
+  # Check if data for the county exists
+  if(nrow(county_data) == 0) {
+    stop(paste("No data available for county:", county_id))
+  }
+  
+  # Create the survey design object for the selected county
+  svy.county <- svydesign(ids = ~1, data = county_data, weights = ~wt)
+  
+  return(svy.county)
+}
+
+# Example: Call the function for a specific county (e.g., county == 2)
+svy.county <- create_svy_design_for_county(YAS_clean6, 5)
+
+# You can now dynamically change the county ID without breaking other parts of the code
+# Example: For county == 3, just call:
+# svy.county <- create_svy_design_for_county(YAS_clean6, 3)
+
+
+``` 
+
+
+### Alcohol Analysis
+
+```{r}
+# Function to analyze alcohol use statewide and by county
+analyze_substance_use <- function(variable, substance_name, design_state, design_county) {
+  # Statewide analysis
+  prop_state <- svytable(as.formula(paste("~", variable)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_state$varname <- recode(prop_state[[variable]], '0' = "No", '1' = "Yes")
+  prop_state$group <- "Statewide"
+  
+  # County-level analysis
+  prop_county <- svytable(as.formula(paste("~", variable)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_county$varname <- recode(prop_county[[variable]], '0' = "No", '1' = "Yes")
+  prop_county$group <- "County"
+  
+  # Combine statewide and county data
+  combined_data <- rbind(prop_state, prop_county)
+  
+  # Use select() from dplyr to remove the column
+  combined_data <- combined_data %>%
+    select(-all_of(variable))
+  
+  combined_data$Substance <- substance_name
+  
+  return(combined_data)
+}
+
+# Example usage for alcohol use [a]
+plot_a <- analyze_substance_use("a", "Alcohol", YAS_design, svy.county)
+
+# View the combined data
+print(plot_a)
+```
+
+In this output table 1 = No and 0 = Yes.
+
+```{r}
+
+# Function to analyze binge drinking data statewide and by county
+analyze_binge_drinking <- function(variable, design_state, design_county) {
+  # Statewide analysis
+  prop_state <- svytable(as.formula(paste("~", variable)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_state$varname <- recode(prop_state[[variable]], 
+                               '0' = "None", 
+                               '1' = "1 day", 
+                               '2' = '2 days', 
+                               '3' = '3-5 days', 
+                               '4' = '6 to 9 days',
+                               '5' = '10 or more days')
+  prop_state$group <- "Statewide"
+  
+  # County-level analysis
+  prop_county <- svytable(as.formula(paste("~", variable)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_county$varname <- recode(prop_county[[variable]], 
+                                '0' = "None", 
+                                '1' = "1 day", 
+                                '2' = '2 days', 
+                                '3' = '3-5 days', 
+                                '4' = '6 to 9 days',
+                                '5' = '10 or more days')
+  prop_county$group <- "County"
+  
+  # Combine statewide and county data
+  combined_data <- rbind(prop_state, prop_county)
+  combined_data <- combined_data %>%
+    select(-all_of(variable))
+  
+  return(combined_data)
+}
+
+# Example usage for binge drinking (variable a_2)
+plot_a2 <- analyze_binge_drinking("a_2", YAS_design, svy.county)
+
+# View the combined data
+print(plot_a2)
+
+
+```
+```{r}
+# Function to analyze yes/no variables statewide and by county
+analyze_yes_no <- function(variable, design_state, design_county, yes_label = "Yes", no_label = "No") {
+  # Statewide analysis
+  prop_state <- svytable(as.formula(paste("~", variable)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_state$varname <- recode(prop_state[[variable]], '0' = no_label, '1' = yes_label)
+  prop_state$group <- "Statewide"
+  
+  # County-level analysis
+  prop_county <- svytable(as.formula(paste("~", variable)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_county$varname <- recode(prop_county[[variable]], '0' = no_label, '1' = yes_label)
+  prop_county$group <- "County"
+  
+  # Combine statewide and county data
+  combined_data <- rbind(prop_state, prop_county)
+  combined_data <- combined_data %>%
+    select(-all_of(variable))
+  
+  return(combined_data)
+}
+
+# Example usage for binge drinking yes/no (variable a_binge)
+plot_ab <- analyze_yes_no("a_binge", YAS_design, svy.county)
+
+# View the combined data
+print(plot_ab)
+
+```
+
+
+
+```{r}
+#Distribution of Responses on whether they set drink limits [a_3]
+# Use the reusable function for yes/no variables
+plot_a3 <- analyze_yes_no("a_3", YAS_design, svy.county)
+
+# View the combined data
+print(plot_a3)
+```
+
+```{r}
+# Function to analyze categorical variables statewide and by county
+analyze_categorical <- function(variable, recode_labels, design_state, design_county) {
+  # Statewide analysis
+  prop_state <- svytable(as.formula(paste("~", variable)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_state$varname <- recode(prop_state[[variable]], !!!recode_labels)
+  prop_state$group <- "Statewide"
+  
+  # County-level analysis
+  prop_county <- svytable(as.formula(paste("~", variable)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_county$varname <- recode(prop_county[[variable]], !!!recode_labels)
+  prop_county$group <- "County"
+  
+  # Combine statewide and county data
+  combined_data <- rbind(prop_state, prop_county)
+  combined_data <- combined_data %>%
+    select(-all_of(variable))
+  
+  return(combined_data)
+}
+
+# Recode labels for a_5
+recode_a5_labels <- c('1' = "Never purchased alcohol", '2' = "Always", 
+                      '3' = "Very Often", '4' = "Sometimes", 
+                      '5' = "Rarely", '6' = "Never")
+
+# Example usage for how often ID was checked when buying alcohol (a_5)
+plot_a5 <- analyze_categorical("a_5", recode_a5_labels, YAS_design, svy.county)
+
+# View the combined data
+print(plot_a5)
+
+```
+
+```{r}
+#Perception of Harm of binge drinking [a_7]
+#Percent reporting no or minimal risk
+# Recode labels for a_7 (Perception of Harm of binge drinking)
+recode_a7_labels <- c('1' = "No risk", '2' = "Minimal risk", 
+                      '3' = "Moderate risk", '4' = "High risk")
+
+# Use the reusable function to analyze categorical variable a_7
+plot_a7 <- analyze_categorical("a_7", recode_a7_labels, YAS_design, svy.county)
+
+# View the combined data
+print(plot_a7)
+```
+
+### Tobacco Analysis
+
+```{r}
+# Analyzing any tobacco use in the last 30 days [created variable - tobacco_yn]
+# Analyzing any tobacco use in the last 30 days
+prop_tyn <- svytable(~tobacco_yn, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode the tobacco_yn variable for labeling
+prop_tyn$varname <- recode(prop_tyn$tobacco_yn, '1' = "Yes", '0' = "No")
+
+# County Analysis
+prop_tyn.cty <- svytable(~tobacco_yn, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode for county data
+prop_tyn.cty$varname <- recode(prop_tyn.cty$tobacco_yn, '1' = "Yes", '0' = "No")
+
+# Add group labels
+prop_tyn$group <- "Statewide"
+prop_tyn.cty$group <- "County"
+
+# Combine Statewide and County data
+plot_tyn <- rbind(prop_tyn, prop_tyn.cty)
+
+# Visualize statewide data using ggplot2
+p1a <- ggplot(data=prop_tyn, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Young adults who used any tobacco products in the last 30 days",
+       y = "Weighted Proportion", x = "Tobacco Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1a)
+
+```
+
+```{r}
+# Distribution of Responses by cigarette use [t___a]
+prop_ta <- svytable(~t___a, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Cigarettes") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_ta$varname <- recode(prop_ta$t___a, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_ta.cty <- svytable(~t___a, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_ta.cty$varname <- recode(prop_ta.cty$t___a, '0' = "No", '1' = "Yes")
+
+# Adding group labels
+prop_ta$group <- "Statewide"
+prop_ta.cty$group <- "County"
+prop_ta.cty$Tobacco <- "Cigarettes"
+
+# Combine Statewide and County data
+plot_ta <- rbind(prop_ta, prop_ta.cty)
+plot_ta <- subset(plot_ta, select = -c(t___a))
+
+# Visualize the data for both statewide and county analysis
+p1b <- ggplot(data=plot_ta, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used cigarettes in the last 30 days",
+       y = "Weighted Proportion", x = "Cigarette Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1b)
+
+```
+
+```{r}
+# Distribution of Responses by cigars/cigarillos use [t___b]
+prop_tb <- svytable(~t___b, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Cigars") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_tb$varname <- recode(prop_tb$t___b, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_tb.cty <- svytable(~t___b, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_tb.cty$varname <- recode(prop_tb.cty$t___b, '0' = "No", '1' = "Yes")
+
+# Adding group labels
+prop_tb$group <- "Statewide"
+prop_tb.cty$group <- "County"
+prop_tb.cty$Tobacco <- "Cigars"
+
+# Combine Statewide and County data
+plot_tb <- rbind(prop_tb, prop_tb.cty)
+plot_tb <- subset(plot_tb, select = -c(t___b))
+
+# Visualize the data for both statewide and county analysis
+p1c <- ggplot(data=plot_tb, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used cigars/cigarillos in the last 30 days",
+       y = "Weighted Proportion", x = "Cigar/Cigarillo Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1c)
+
+```
+
+```{r}
+# Distribution of Responses by hookah use [t___c]
+prop_tc <- svytable(~t___c, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Hookah") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_tc$varname <- recode(prop_tc$t___c, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_tc.cty <- svytable(~t___c, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_tc.cty$varname <- recode(prop_tc.cty$t___c, '0' = "No", '1' = "Yes")
+
+# Add group labels
+prop_tc$group <- "Statewide"
+prop_tc.cty$group <- "County"
+prop_tc.cty$Tobacco <- "Hookah"
+
+# Combine Statewide and County data
+plot_tc <- rbind(prop_tc, prop_tc.cty)
+plot_tc <- subset(plot_tc, select = -c(t___c))
+
+# Visualize the data for both statewide and county analysis
+p1d <- ggplot(data=plot_tc, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used hookah in the last 30 days",
+       y = "Weighted Proportion", x = "Hookah Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1d)
+
+```
+
+```{r}
+# Distribution of Responses by smokeless tobacco use (chew, snus, snuff) [t___d]
+prop_td <- svytable(~t___d, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Smokeless Tobacco") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_td$varname <- recode(prop_td$t___d, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_td.cty <- svytable(~t___d, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_td.cty$varname <- recode(prop_td.cty$t___d, '0' = "No", '1' = "Yes")
+
+# Add group labels
+prop_td$group <- "Statewide"
+prop_td.cty$group <- "County"
+prop_td.cty$Tobacco <- "Smokeless Tobacco"
+
+# Combine Statewide and County data
+plot_td <- rbind(prop_td, prop_td.cty)
+plot_td <- subset(plot_td, select = -c(t___d))
+
+# Visualize the data for both statewide and county analysis
+p1e <- ggplot(data=plot_td, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used smokeless tobacco in the last 30 days",
+       y = "Weighted Proportion", x = "Smokeless Tobacco Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1e)
+
+```
+
+```{r}
+# Distribution of Responses by vaping use [t___e]
+prop_te <- svytable(~t___e, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Vaping") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_te$varname <- recode(prop_te$t___e, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_te.cty <- svytable(~t___e, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_te.cty$varname <- recode(prop_te.cty$t___e, '0' = "No", '1' = "Yes")
+
+# Add group labels
+prop_te$group <- "Statewide"
+prop_te.cty$group <- "County"
+prop_te.cty$Tobacco <- "Vaping"
+
+# Combine Statewide and County data
+plot_te <- rbind(prop_te, prop_te.cty)
+plot_te <- subset(plot_te, select = -c(t___e))
+
+# Visualize the data for both statewide and county analysis
+p1f <- ggplot(data=plot_te, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used e-Cigarettes/Vapes in the last 30 days",
+       y = "Weighted Proportion", x = "e-Cigarette/Vaping Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1f)
+
+```
+
+```{r}
+# Distribution of Responses by Other tobacco product use [t___f]
+prop_tf <- svytable(~t___f, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "Other") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_tf$varname <- recode(prop_tf$t___f, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_tf.cty <- svytable(~t___f, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_tf.cty$varname <- recode(prop_tf.cty$t___f, '0' = "No", '1' = "Yes")
+
+# Add group labels
+prop_tf$group <- "Statewide"
+prop_tf.cty$group <- "County"
+prop_tf.cty$Tobacco <- "Other"
+
+# Combine Statewide and County data
+plot_tf <- rbind(prop_tf, prop_tf.cty)
+plot_tf <- subset(plot_tf, select = -c(t___f))
+
+# Visualize the data for both statewide and county analysis
+p1g <- ggplot(data=plot_tf, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used other tobacco products in the last 30 days",
+       y = "Weighted Proportion", x = "Other Tobacco Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1g)
+
+```
+
+```{r}
+# Distribution of Responses for no tobacco/nicotine use [t___g]
+prop_tg <- svytable(~t___g, design=YAS_design) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq),
+         Tobacco = "None") %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for better readability
+prop_tg$varname <- recode(prop_tg$t___g, '0' = "No", '1' = "Yes")
+
+# County Analysis
+prop_tg.cty <- svytable(~t___g, design=svy.county) %>%
+  as.data.frame() %>%
+  mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+  arrange(desc(Weighted_Prop))
+
+# Recode values for county data
+prop_tg.cty$varname <- recode(prop_tg.cty$t___g, '0' = "No", '1' = "Yes")
+
+# Add group labels
+prop_tg$group <- "Statewide"
+prop_tg.cty$group <- "County"
+prop_tg.cty$Tobacco <- "None"
+
+# Combine Statewide and County data
+plot_tg <- rbind(prop_tg, prop_tg.cty)
+plot_tg <- subset(plot_tg, select = -c(t___g))
+
+# Visualize the data for both statewide and county analysis
+p1h <- ggplot(data=plot_tg, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults with no tobacco/nicotine use in the last 30 days",
+       y = "Weighted Proportion", x = "No Tobacco/Nicotine Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1h)
+
+```
+
+```{r}
+# Combine all tobacco use datasets
+Tobacco_all <- rbind(plot_ta, plot_tb, plot_tc, plot_td, plot_te, plot_tf, plot_tg) %>%
+  filter(varname == "Yes") %>%
+  arrange(desc(Weighted_Prop))
+
+# Plot tobacco products used by young adults
+p1 <- ggplot(data=Tobacco_all, aes(x = reorder(Tobacco, Weighted_Prop), y = Weighted_Prop)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Types of tobacco products used by young adults",
+       y = "Weighted Proportion", x = "Tobacco Product") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p1)
+
+
+```
+
+[**Question for Melissa about this output!!!**]{.underline}
+
+Do you want to keep "none" on this graph?
+
+#### People who used more than 1 type of Tobacco
+
+```{r}
+# Function to recalculate the tobacco_all variable within YAS_clean6
+recalculate_tobacco_all <- function(data) {
+  data$tobacco_all <- rowSums(data[, c("t___a", "t___b", "t___c", "t___d", "t___e", "t___f")], na.rm = TRUE)
+  return(data)
+}
+
+# Recalculate tobacco_all in YAS_clean6
+YAS_clean6 <- recalculate_tobacco_all(YAS_clean6)
+
+# Example: Subsetting by county in YAS_clean6
+# Replace "2" with the desired county number
+county_data <- subset(YAS_clean6, county == 2)
+
+# Count the number of tobacco products used in the subset
+num_tobacco_products <- county_data %>%
+  count(tobacco_all)
+
+# Print the result
+print(num_tobacco_products)
+
+```
+
+### Marijuana Analysis
+
+```{r}
+# Reuse the function for analyzing yes/no variables for marijuana use in the past year
+plot_m <- analyze_yes_no("m", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_m <- ggplot(data=plot_m, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults who used marijuana in the past year (Yes/No)",
+       y = "Weighted Proportion", x = "Marijuana Use (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_m)
+
+
+```
+
+```{r}
+# Recode labels for marijuana use frequency in the past year (m_1)
+recode_m1_labels <- c('1' = "Daily", '2' = "Weekly", '3' = "Monthly", 
+                      '4' = "A few times during the year", '5' = "Only once")
+
+# Use the reusable function for categorical variables
+plot_m1 <- analyze_categorical("m_1", recode_m1_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_m1 <- ggplot(data=plot_m1, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults' marijuana use frequency in the past year",
+       y = "Weighted Proportion", x = "Frequency of Marijuana Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_m1)
+
+```
+
+```{r}
+# Reuse the function for analyzing yes/no variables for driving after marijuana use
+plot_m3 <- analyze_yes_no("m_3", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p2 <- ggplot(data=plot_m3, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who drove after marijuana use (Yes/No)",
+       y = "Weighted Proportion", x = "Drove After Marijuana Use") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p2)
+
+
+```
+
+```{r}
+# Recode labels for marijuana use in the last 30 days (m_4)
+recode_m4_labels <- c('0' = "None", '1' = "1 day", '2' = "2 days", 
+                      '3' = "3-5 days", '4' = "6-9 days", '5' = "10 or more days")
+
+# Use the reusable function for categorical variables
+plot_m4 <- analyze_categorical("m_4", recode_m4_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis for marijuana use frequency
+p3 <- ggplot(data=plot_m4, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young adults' marijuana use in the last 30 days",
+       y = "Weighted Proportion", x = "Marijuana Use Frequency") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p3)
+```
+
+[**Question for Melissa about this output!!!**]{.underline}
+
+There are 1626 respondents to this question, and the output graph makes it look like 60% of youth have smoked pot in the last 30 days. Even though, really this is just saying Among people who smoked at all in the last year, 60% of those have smoked in the last 30 days. This question was only answered if m=1, and includes 43% of total respondents.
+
+Option do I include those who answered m=0 in the "No" group for this output?
+
+```{r}
+# Reuse the function for analyzing yes/no variables
+plot_m4yn <- analyze_yes_no("m_4yn", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the results
+p_m4yn <- ggplot(data=plot_m4yn, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who used marijuana in the last 30 days (Yes/No)",
+       y = "Weighted Proportion", x = "Marijuana Use (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_m4yn)
+
+```
+
+
+
+
+```{r}
+# Recode labels for how marijuana was obtained (m_5)
+recode_m5_labels <- c('1' = "From a friend or relative for free",
+                      '2' = "Bought from friend or relative",
+                      '3' = "Took from friend or relative without asking",
+                      '4' = "Bought from drug dealer or other stranger",
+                      '5' = "Purchased in another state where retail marijuana is available",
+                      '6' = "Get a medical card from a physician to purchase in another state where it is legal",
+                      '7' = "Some other way")
+
+# Use the reusable function for categorical variables
+plot_m5 <- analyze_categorical("m_5", recode_m5_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p4 <- ggplot(data=plot_m5, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How young adults obtained marijuana",
+       y = "Weighted Proportion", x = "Source of Marijuana") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p4)
+
+```
+
+```{r}
+# Recode labels for perception of marijuana risk (m_7)
+recode_m7_labels <- c('1' = "No risk",
+                      '2' = "Minimal risk",
+                      '3' = "Moderate risk",
+                      '4' = "High risk")
+
+# Use the reusable function for categorical variables
+plot_m7 <- analyze_categorical("m_7", recode_m7_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p5 <- ggplot(data = plot_m7, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +  # Convert decimals to percentages
+  labs(title = "How young adults perceive the potential harm of weekly marijuana use",
+       y = "Weighted Proportion",
+       x = "Perception of Harm") +
+  theme_minimal()
+
+# Print the plot
+print(p5)
+
+```
+
+### Opioid Analysis
+```{r}
+# Reuse the function for analyzing yes/no variables for kratom use
+plot_d <- analyze_yes_no("d", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_d <- ggplot(data=plot_d, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who have ever used kratom",
+       y = "Weighted Proportion", x = "Ever Used Kratom (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_d)
+
+```
+```{r}
+# Reuse the function for analyzing yes/no variables for kratom use (d_1)
+plot_d1 <- analyze_yes_no("d_1", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_d1 <- ggplot(data=plot_d1, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who have ever used kratom",
+       y = "Weighted Proportion", x = "Ever Used Kratom (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_d1)
+```
+
+
+```{r}
+# Recode labels for prescription drug use in the past 30 days (d_2)
+recode_d2_labels <- c('0' = "None", '1' = "1 day", '2' = "2 days", 
+                      '3' = "3-5 days", '4' = "6-9 days", '5' = "10 or more days")
+
+# Use the reusable function for categorical variables
+plot_d2 <- analyze_categorical("d_2", recode_d2_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p6 <- ggplot(data=plot_d2, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How often young adults used prescription drugs to get high in past 30 days",
+       y = "Weighted Proportion", x = "Number of days") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p6)
+```
+
++++++++ This analysis has the same issue as the marijuana. It presents only the data for the people who used prescription drugs at all within the last year.
+
+```{r}
+# Reuse the function for analyzing yes/no variables for prescription drug use (d2_yn)
+plot_d2yn <- analyze_yes_no("d2_yn", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_d2yn <- ggplot(data=plot_d2yn, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who used prescription drugs in the last 30 days",
+       y = "Weighted Proportion", x = "Prescription Drug Use (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_d2yn)
+
+```
+
+
+
+```{r}
+# Reuse the function for analyzing yes/no variables for prescription pain reliever use (d3_yn)
+plot_d3yn <- analyze_yes_no("d3_yn", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_d3yn <- ggplot(data=plot_d3yn, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who used prescription pain relievers in the last 30 days",
+       y = "Weighted Proportion", x = "Prescription Pain Reliever Use (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_d3yn)
+
+```
+
+### Suicide/Mental Health
+
+```{r}
+# Recode labels for feeling down, depressed, or hopeless in the past two weeks (mh)
+recode_mh_labels <- c('1' = "Nearly every day", 
+                      '2' = "More than half days", 
+                      '3' = "Several days", 
+                      '4' = "Once or twice", 
+                      '5' = "Not at all")
+
+# Use the reusable function for categorical variables
+plot_mh <- analyze_categorical("mh", recode_mh_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_mh <- ggplot(data=plot_mh, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How often young adults felt down, depressed, or hopeless in the past 2 weeks",
+       y = "Weighted Proportion", x = "Frequency of feeling down") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_mh)
+```
+
+```{r}
+# Recode labels for receiving mental health services in the last 12 months (mh_1)
+recode_mh1_labels <- c('1' = "Yes", 
+                       '2' = "No", 
+                       '3' = "Prefer not to answer")
+
+# Use the reusable function for categorical variables
+plot_mh1 <- analyze_categorical("mh_1", recode_mh1_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_mh1 <- ggplot(data=plot_mh1, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who received psychological or mental health services in the last 12 months",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_mh1)
+```
+
+
+
+```{r}
+# Recode labels for considering seeking help from a mental health professional (mh_2)
+recode_mh2_labels <- c('1' = "Yes", '2' = "No", '3' = "Unsure")
+
+# Use the reusable function for categorical variables
+plot_mh2 <- analyze_categorical("mh_2", recode_mh2_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p9 <- ggplot(data=plot_mh2, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether young adults would consider seeking help from a mental health professional in the future",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p9)
+```
+
+```{r}
+# Reuse the function for analyzing yes/no variables for seriously considering suicide (mh_3)
+plot_mh3 <- analyze_yes_no("mh_3", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p10 <- ggplot(data=plot_mh3, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether young adults have seriously considered suicide in the past year",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p10)
+```
+
+```{r}
+# Recode labels for how many times young adults attempted suicide in the past year (mh_4)
+recode_mh4_labels <- c('1' = "None", 
+                       '2' = "Once", 
+                       '3' = "Twice", 
+                       '4' = "Three or more times")
+
+# Use the reusable function for categorical variables
+plot_mh4 <- analyze_categorical("mh_4", recode_mh4_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p11 <- ggplot(data=plot_mh4, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How many times young adults have attempted suicide in the past year",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p11)
+```
+
+```{r}
+# Reuse the function for analyzing yes/no variables for attempted suicide (mh4yn)
+plot_mh4yn <- analyze_yes_no("mh4yn", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_mh4yn <- ggplot(data=plot_mh4yn, aes(x = reorder(varname, -Weighted_Prop), y= Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults who attempted suicide in the past year (Yes/No)",
+       y = "Weighted Proportion", x = "Attempted Suicide (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_mh4yn)
+```
+
+
+### Firearms
+
+```{r}
+# Recode labels for firearm presence in or around the home (fire)
+recode_fire_labels <- c('1' = "Yes", 
+                        '2' = "No", 
+                        '3' = "Don't know/Not sure", 
+                        '4' = "Prefer not to answer")
+
+# Use the reusable function for categorical variables
+plot_fire <- analyze_categorical("fire", recode_fire_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p12 <- ggplot(data=plot_fire, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether young adults have a firearm in or around their home",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p12)
+```
+
+```{r}
+# Recode labels for whether firearms are loaded (fire_1)
+recode_fire1_labels <- c('1' = "Yes", 
+                         '2' = "No", 
+                         '3' = "Don't know/Not sure")
+
+# Use the reusable function for categorical variables
+plot_fire1 <- analyze_categorical("fire_1", recode_fire1_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_fire1 <- ggplot(data=plot_fire1, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether firearms in or around the home are loaded",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_fire1)
+```
+
+```{r}
+# Reuse the function for analyzing yes/no variables for whether loaded firearms are unlocked (fire_2)
+plot_fire2 <- analyze_yes_no("fire_2", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Visualize the data for both statewide and county analysis
+p_fire2 <- ggplot(data=plot_fire2, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether loaded firearms are unlocked in the home",
+       y = "Weighted Proportion", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_fire2)
+```
+
+### Shared Protective/Risk Factors
+####Insurance
+
+```{r}
+# Recode labels for health coverage types (ha)
+recode_ha_labels <- c('1' = "Employer-sponsored plan",
+                      '2' = "Private non-governmental plan",
+                      '3' = "Medicare",
+                      '4' = "Medigap",
+                      '5' = "Medicaid",
+                      '6' = "Children's Health Insurance Program (CHIP)",
+                      '7' = "Military",
+                      '8' = "IHS",
+                      '9' = "State sponsored health plan",
+                      '10' = "Other government program",
+                      '11' = "No coverage of any type",
+                      '12' = "Don't know/not sure",
+                      '13' = "Prefer not to answer")
+
+# Use the reusable function for categorical variables
+plot_ha <- analyze_categorical("ha", recode_ha_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_ha <- ggplot(data=plot_ha, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Types of Health Coverage for Young Adults",
+       y = "Weighted Proportion", x = "Health Coverage Type") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_ha)
+```
+Insurance yes/no
+```{r}
+# Reuse the function for analyzing yes/no variables for health insurance (ha_yn)
+plot_hayn <- analyze_yes_no("ha_yn", YAS_design, svy.county, yes_label = "Yes", no_label = "No")
+
+# Adjust weighted proportions for percentage display
+plot_hayn$Weighted_Prop <- plot_hayn$Weighted_Prop * 100
+
+# Visualize the data for both statewide and county analysis
+p_hayn <- ggplot(data=plot_hayn, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Proportion of young adults with health insurance (Yes/No)",
+       y = "Percentage", x = "Health Insurance (Yes/No)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))
+
+# Print the plot
+print(p_hayn)
+```
+#### Seatbelts
+How often do you wear a seat belt while driving?
+```{r}
+# Recode labels for the variable mv
+recode_mv_labels <- c('1' = "Never", 
+                      '2' = "Rarely", 
+                      '3' = "Sometimes", 
+                      '4' = "Most of the time", 
+                      '5' = "Always")
+
+# Use the reusable function for categorical variables
+plot_mv <- analyze_categorical("mv", recode_mv_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_mv <- ggplot(data=plot_mv, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How often young adults engage in the behavior",
+       y = "Weighted Proportion", x = "Frequency") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_mv)
+```
+
+During the past 30 days, on how many days did you text or e-mail while driving a car or other vehicle?
+```{r}
+# Recode labels for the variable mv_1
+recode_mv1_labels <- c('1' = "Did not drive", 
+                       '2' = "0 days", 
+                       '3' = "1 or 2 days", 
+                       '4' = "3-5 days", 
+                       '5' = "6-9 days", 
+                       '6' = "10-19 days", 
+                       '7' = "20-29 days", 
+                       '8' = "All 30 days")
+
+# Use the reusable function for categorical variables
+plot_mv1 <- analyze_categorical("mv_1", recode_mv1_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_mv1 <- ggplot(data=plot_mv1, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "How many days young adults drove in the past 30 days",
+       y = "Weighted Proportion", x = "Number of Days") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_mv1)
+
+```
+
+###Demographics
+####Sex at Birth
+```{r}
+# Recode labels for sex at birth (demo)
+recode_demo_labels <- c('1' = "Male", 
+                        '2' = "Female", 
+                        '3' = "Intersex")
+
+# Use the reusable function for categorical variables
+plot_demo <- analyze_categorical("demo", recode_demo_labels, YAS_design, svy.county)
+
+# Visualize the data for both statewide and county analysis
+p_demo <- ggplot(data=plot_demo, aes(x = reorder(varname, Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Distribution of Sex at Birth for Young Adults",
+       y = "Weighted Proportion", x = "Sex at Birth") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+# Print the plot
+print(p_demo)
+
+```
+
+####Race
+```{r}
+# Define a function to process each checkbox (race category)
+process_race_data <- function(column_name, race_label, design_state, design_county) {
+  
+  # Statewide Analysis
+  prop_state <- svytable(as.formula(paste("~", column_name)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq),
+           race = race_label) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_state$varname <- recode(prop_state[[column_name]], '1' = "Yes", '0' = "No")
+  prop_state$group <- "Statewide"
+  
+  # County Analysis
+  prop_county <- svytable(as.formula(paste("~", column_name)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(Weighted_Prop = Freq / sum(Freq)) %>%
+    arrange(desc(Weighted_Prop))
+  
+  prop_county$varname <- recode(prop_county[[column_name]], '1' = "Yes", '0' = "No")
+  prop_county$group <- "County"
+  prop_county$race <- race_label
+  
+  # Combine Statewide and County
+  combined_data <- rbind(prop_state, prop_county)
+  combined_data <- combined_data %>%
+    select(-all_of(column_name))
+  
+  return(combined_data)
+}
+
+# Process each race category
+plot_demo2a <- process_race_data("demo_2___a", "White", YAS_design, svy.county)
+plot_demo2b <- process_race_data("demo_2___b", "Black or African American", YAS_design, svy.county)
+plot_demo2c <- process_race_data("demo_2___c", "Asian", YAS_design, svy.county)
+plot_demo2d <- process_race_data("demo_2___d", "NH/PI", YAS_design, svy.county)
+plot_demo2e <- process_race_data("demo_2___e", "AI/AN", YAS_design, svy.county)
+plot_demo2f <- process_race_data("demo_2___f", "Bi-racial or Multi-racial", YAS_design, svy.county)
+plot_demo2g <- process_race_data("demo_2___g", "Hispanic", YAS_design, svy.county)
+plot_demo2h <- process_race_data("demo_2___h", "Other", YAS_design, svy.county)
+
+# Combine all race data into one data frame
+plot_all_races <- rbind(plot_demo2a, plot_demo2b, plot_demo2c, plot_demo2d, plot_demo2e, plot_demo2f, plot_demo2g, plot_demo2h)
+
+# View combined data
+print(plot_all_races)
+
+```
+
+```{r}
+#People who are more than 1 race
+YAS_clean6$race_count <- rowSums(YAS_clean6[,c("demo_2___a",
+                                                            "demo_2___b",
+                                                            "demo_2___c",
+                                                            "demo_2___d", 
+                                                            "demo_2___e",
+                                                            "demo_2___f","demo_2___g", "demo_2___h")])
+
+num_races <- YAS_clean6 %>%
+  filter(county == 2) %>% # Filter for county = 2
+  count(race_count)
+print(num_races)
+```
+
+```{r}
+
+race_all <- rbind(plot_demo2a, plot_demo2b, plot_demo2c, plot_demo2d, plot_demo2e, plot_demo2f, plot_demo2g, plot_demo2h) %>%
+  filter(varname == "Yes") %>%
+  group_by(group) %>%
+  mutate(rank = rank(-Weighted_Prop)) %>%  # Rank within each group
+  arrange(group, rank) %>%  # Sort by group and rank
+  select(-rank) 
+
+race_all$Weighted_Prop <- race_all$Weighted_Prop*100
+race_all$Weighted_Prop <- round(race_all$Weighted_Prop, digits=1)
+
+print(race_all)
+
+# Summing Weighted_Prop for 'County' and 'Statewide'
+race_all_sum <- race_all %>%
+  group_by(group) %>%
+  summarise(Total_Weighted_Prop = sum(Weighted_Prop)) %>%
+  filter(group %in% c("County", "Statewide"))
+
+# Print the result
+print(race_all_sum)
+
+```
+
+
+####Education
+```{r}
+# Recode labels for the highest level of education completed
+recode_demo4_labels <- c('1' = "Less than a high school degree", 
+                         '2' = "High School graduate/GED",
+                         '3' = "Some college, no degree",
+                         '4' = "Occ, tech or vocational program",
+                         '5' = "College degree",
+                         '6' = "Some grad school",
+                         '7' = "Graduate or professional degree")
+
+# Use the reusable function for categorical variables
+plot_demo4 <- analyze_categorical("demo_4", recode_demo4_labels, YAS_design, svy.county)
+
+# Adjust the Weighted_Prop to be in percentage format
+plot_demo4$Weighted_Prop <- plot_demo4$Weighted_Prop * 100
+plot_demo4$Weighted_Prop <- round(plot_demo4$Weighted_Prop, digits = 1)
+
+# Function to adjust rounding proportionally
+adjust_rounding_proportional <- function(df, group_col, prop_col) {
+  df <- df %>%
+    group_by(!!sym(group_col)) %>%
+    mutate(Total_Weighted_Prop = sum(!!sym(prop_col)),
+           Difference = 100 - Total_Weighted_Prop) %>%
+    # Calculate the proportional share of the difference for each row
+    mutate(Adjustment = (Difference / sum(!!sym(prop_col))) * !!sym(prop_col),
+           !!prop_col := !!sym(prop_col) + Adjustment) %>%
+    select(-Total_Weighted_Prop, -Difference, -Adjustment)  # Clean up the temporary columns
+  return(df)
+}
+
+# Apply the adjustment function
+plot_demo4 <- adjust_rounding_proportional(plot_demo4, "group", "Weighted_Prop")
+
+# Visualize the data for both statewide and county analysis
+p_demo4 <- ggplot(data = plot_demo4, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Highest Level of Education Completed by Young Adults",
+       y = "Percentage", x = "Level of Education") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal()
+
+# Print the plot
+print(p_demo4)
+
+# Summing Weighted_Prop for 'County' and 'Statewide'
+education_sum <- plot_demo4 %>%
+  group_by(group) %>%
+  summarise(Total_Weighted_Prop = sum(Weighted_Prop)) %>%
+  filter(group %in% c("County", "Statewide"))
+
+# Print the result
+print(education_sum)
+
+```
+
+#### Employment
+```{r}
+# Recode labels for employment status (demo_5)
+recode_demo5_labels <- c('1' = "Student", 
+                         '2' = "Employed PT or FT",
+                         '3' = "Military",
+                         '4' = "Not employed, unable to work",
+                         '5' = "Not employed, looking for work",
+                         '6' = "Stay-at-home parent")
+
+# Use the reusable function for categorical variables
+plot_demo5 <- analyze_categorical("demo_5", recode_demo5_labels, YAS_design, svy.county)
+
+# Adjust the Weighted_Prop to be in percentage format
+plot_demo5$Weighted_Prop <- plot_demo5$Weighted_Prop * 100
+plot_demo5$Weighted_Prop <- round(plot_demo5$Weighted_Prop, digits = 1)
+
+# Visualize the data for both statewide and county analysis
+p_demo5 <- ggplot(data = plot_demo5, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Employment Status of Young Adults",
+       y = "Percentage", x = "Employment Status") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal()
+
+# Print the plot
+print(p_demo5)
+```
+
+####Hungry
+```{r}
+# Recode labels for the question about not having enough money for food
+recode_demo8_labels <- c('1' = "Yes", 
+                         '2' = "No",
+                         '3' = "Don't know")
+
+# Use the reusable function for categorical variables
+plot_demo8 <- analyze_categorical("demo_8", recode_demo8_labels, YAS_design, svy.county)
+
+# Adjust the Weighted_Prop to be in percentage format
+plot_demo8$Weighted_Prop <- plot_demo8$Weighted_Prop * 100
+
+# Visualize the data for both statewide and county analysis
+p_demo8 <- ggplot(data = plot_demo8, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Whether young adults had enough money for food in the last 12 months",
+       y = "Percentage", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal()
+
+# Print the plot
+print(p_demo8)
+```
+
+#### Living Situation
+```{r}
+# Recode labels for the living situation
+recode_demo9_labels <- c('1' = "Steady place to live", 
+                         '2' = "Have a place now, worried about losing it in the future",
+                         '3' = "No steady place")
+
+# Use the reusable function for categorical variables
+plot_demo9 <- analyze_categorical("demo_9", recode_demo9_labels, YAS_design, svy.county)
+
+# Adjust the Weighted_Prop to be in percentage format
+plot_demo9$Weighted_Prop <- plot_demo9$Weighted_Prop * 100
+plot_demo9$Weighted_Prop <- round(plot_demo9$Weighted_Prop, digits = 1)
+
+# Visualize the data for both statewide and county analysis
+p_demo9 <- ggplot(data = plot_demo9, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young Adults' Living Situation",
+       y = "Percentage", x = "Living Situation") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal()
+
+# Print the plot
+print(p_demo9)
+```
+
+####Language
+```{r}
+# Recode labels for speaking a language other than English at home
+recode_demo3_labels <- c('1' = "Yes", 
+                         '2' = "No")
+
+# Use the reusable function for categorical variables
+plot_demo3 <- analyze_categorical("demo_3", recode_demo3_labels, YAS_design, svy.county)
+
+# Adjust the Weighted_Prop to be in percentage format
+plot_demo3$Weighted_Prop <- plot_demo3$Weighted_Prop * 100
+
+# Visualize the data for both statewide and county analysis
+p_demo3 <- ggplot(data = plot_demo3, aes(x = reorder(varname, -Weighted_Prop), y = Weighted_Prop, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(title = "Young Adults Who Speak a Language Other Than English at Home",
+       y = "Percentage", x = "Response") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal()
+
+# Print the plot
+print(p_demo3)
+```
+
+### Crosstabs
+
+```{r}
+# Function to compare Depression by Alcohol Use
+compare_depression_alcohol <- function(design_state, design_county, var_depression, var_alcohol) {
+  
+  # Statewide Analysis
+  tab_state <- svytable(as.formula(paste("~", var_depression, "+", var_alcohol)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(!!var_alcohol := factor(!!as.name(var_alcohol), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_alcohol)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100) %>%
+    mutate(substance = "Alcohol", group = "Statewide")
+  
+  # County Analysis
+  tab_county <- svytable(as.formula(paste("~", var_depression, "+", var_alcohol)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(!!var_alcohol := factor(!!as.name(var_alcohol), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_alcohol)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100) %>%
+    mutate(substance = "Alcohol", group = "County")
+  
+  # Combine Statewide and County Data
+  combined_data <- rbind(tab_state, tab_county) %>%
+    dplyr::rename(yesno = !!as.name(var_alcohol))
+  
+  return(combined_data)
+}
+
+# Apply the function for Depression by Alcohol Use
+tab_mh_a2 <- compare_depression_alcohol(YAS_design, svy.county, "mh", "a")
+
+# View the combined data
+print(tab_mh_a2)
+```
+
+Comparing 2 variables - Depression by Tobacco Use. (Survey-Weighted Contingency Tables) svytable(\~mh, design = YAS_design)
+
+```{r}
+# Function to compare Depression by Tobacco Use
+compare_depression_tobacco <- function(design_state, design_county, var_depression, var_tobacco) {
+  
+  # Statewide Analysis
+  tab_state <- svytable(as.formula(paste("~", var_depression, "+", var_tobacco)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(!!var_tobacco := factor(!!as.name(var_tobacco), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_tobacco)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100, substance = "Tobacco", group = "Statewide")
+  
+  # County Analysis
+  tab_county <- svytable(as.formula(paste("~", var_depression, "+", var_tobacco)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(!!var_tobacco := factor(!!as.name(var_tobacco), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_tobacco)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100, substance = "Tobacco", group = "County")
+  
+  # Combine Statewide and County Data
+  combined_data <- rbind(tab_state, tab_county) %>%
+    dplyr::rename(yesno = !!as.name(var_tobacco))
+  
+  return(combined_data)
+}
+
+# Apply the function for Depression by Tobacco Use
+tab_mh_ta <- compare_depression_tobacco(YAS_design, svy.county, "mh", "tobacco_yn")
+
+# View the combined data
+print(tab_mh_ta)
+```
+
+```{r}
+# Function to compare Depression by Substance Use (Marijuana in this case)
+compare_depression_substance <- function(design_state, design_county, var_depression, var_substance, substance_label) {
+  
+  # Statewide Analysis
+  tab_state <- svytable(as.formula(paste("~", var_depression, "+", var_substance)), design = design_state) %>%
+    as.data.frame() %>%
+    mutate(!!var_substance := factor(!!as.name(var_substance), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_substance)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100, substance = substance_label, group = "Statewide")
+  
+  # County Analysis
+  tab_county <- svytable(as.formula(paste("~", var_depression, "+", var_substance)), design = design_county) %>%
+    as.data.frame() %>%
+    mutate(!!var_substance := factor(!!as.name(var_substance), levels = c(0, 1), labels = c("No", "Yes"))) %>%
+    mutate(varname = recode(!!as.name(var_depression), 
+                            '1' = "Nearly every day", 
+                            '2' = "More than half days", 
+                            '3' = "Several days", 
+                            '4' = "Once or twice", 
+                            '5' = "Not at all")) %>%
+    filter(varname %in% c("Nearly every day", "More than half days")) %>%
+    mutate(varname = "Frequent Depression") %>%
+    group_by(varname, !!as.name(var_substance)) %>%
+    summarise(Freq = sum(Freq), .groups = 'drop') %>%
+    mutate(Percent = Freq / sum(Freq) * 100, substance = substance_label, group = "County")
+  
+  # Combine Statewide and County Data
+  combined_data <- rbind(tab_state, tab_county) %>%
+    dplyr::rename(yesno = !!as.name(var_substance))
+  
+  return(combined_data)
+}
+
+# Apply the function for Depression by Marijuana Use
+tab_mh_m<- compare_depression_substance(YAS_design, svy.county, "mh", "m", "Marijuana")
+
+# View the combined data
+print(tab_mh_m)
+```
+
+```{r}
+# Apply the function for Depression by Prescription Drug Use
+tab_mh_d1 <- compare_depression_substance(YAS_design, svy.county, "mh", "d_1", "Prescription Drugs")
+
+# View the combined data
+print(tab_mh_d1)
+
+```
+
+```{r}
+# Combine all the tables
+crosstabs <- rbind(tab_mh_a2, tab_mh_ta, tab_mh_m, tab_mh_d1)
+
+# Ensure the Percent column is rounded
+crosstabs$Percent <- round(crosstabs$Percent, digits = 1)
+
+# View the combined crosstab data
+print(crosstabs)
+```
+### Sample Method from MMWR
+
+Outlined method for survey analysis from this site: <https://zatumcorp.com/wp-content/uploads/2019/07/Data-analyses-R-manual-NYTS.pdf>
+
+```{r}
+
+```
+
+sessionInfo()
